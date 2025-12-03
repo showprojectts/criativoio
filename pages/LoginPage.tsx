@@ -6,7 +6,7 @@ import { Input } from '../components/ui/Input';
 import { Label } from '../components/ui/Label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '../components/ui/Card';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/Alert';
-import { AlertCircle, Loader2, ArrowLeft, HelpCircle } from 'lucide-react';
+import { AlertCircle, Loader2, ArrowLeft } from 'lucide-react';
 import { useAuth } from '../components/providers/AuthProvider';
 import Logo from '../components/shared/Logo';
 
@@ -17,7 +17,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<React.ReactNode | null>(null);
 
   React.useEffect(() => {
     if (session) {
@@ -54,11 +54,9 @@ export default function LoginPage() {
       const msg = err.message || '';
 
       if (msg.includes('Invalid login credentials') || msg.includes('invalid claim')) {
-         setError('Credenciais inválidas. Verifique sua senha ou se confirmou seu e-mail. Se você excluiu sua conta recentemente, precisará criar uma nova.');
+         setError('Credenciais inválidas. Verifique seu e-mail e senha e tente novamente.');
       } else if (msg.includes('User is banned')) {
          setError('Sua conta foi suspensa permanentemente. Entre em contato com o suporte se acreditar que isso é um erro.');
-      } else if (msg.includes('Email not confirmed')) {
-         setError('E-mail não confirmado. Verifique sua caixa de entrada (e spam) para ativar sua conta.');
       } else {
          setError(msg || 'Ocorreu um erro ao tentar entrar.');
       }
@@ -98,7 +96,7 @@ export default function LoginPage() {
             
             {error && (
               <Alert variant="destructive">
-                <AlertCircle className="h-4 w-4" />
+                <AlertCircle className="h-4 w-4 shrink-0" />
                 <AlertTitle>Não foi possível entrar</AlertTitle>
                 <AlertDescription>
                   {error}

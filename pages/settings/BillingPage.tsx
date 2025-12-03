@@ -1,48 +1,83 @@
+
 import React, { useEffect, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { supabase } from '../../lib/supabase/client';
 import { useAuth } from '../../components/providers/AuthProvider';
-import { Zap, CreditCard, ExternalLink, Loader2 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Zap, CreditCard, ExternalLink, Loader2, AlertCircle, Calendar, ArrowUpCircle } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
 import { Spinner } from '../../components/ui/Spinner';
-import { Alert, AlertDescription, AlertTitle } from '../../components/ui/Alert';
 
 export default function BillingPage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [balance, setBalance] = useState<number | null>(null);
+  const [planId, setPlanId] = useState<string>('FREE');
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
+  
+  // New States for UX
+  const [renewalDate, setRenewalDate] = useState<string | null>(null);
 
   useEffect(() => {
-    async function fetchCredits() {
+    async function fetchData() {
       if (!user) return;
       try {
-        const { data, error } = await supabase
+        setLoading(true);
+        
+        // 1. Fetch Credits
+        const creditsPromise = supabase
           .from('user_credits')
           .select('balance')
-          .eq('profile_id', user.id) // Changed from user_id to profile_id
+          .eq('profile_id', user.id)
           .single();
 
-        if (error) {
-            if (error.code !== 'PGRST116') { // Ignore "no rows found" error for new users
-                 console.error("Error fetching credits:", JSON.stringify(error));
+        // 2. Fetch Plan ID form Profile
+        const profilePromise = supabase
+          .from('profiles')
+          .select('plan_id')
+          .eq('id', user.id)
+          .single();
+
+        const [creditsResult, profileResult] = await Promise.allSettled([creditsPromise, profilePromise]);
+
+        // Process Credits
+        if (creditsResult.status === 'fulfilled') {
+            const { data, error } = creditsResult.value;
+            if (data) {
+                setBalance(data.balance);
+            } else {
+                setBalance(0);
             }
-            setBalance(0);
-        } else if (data) {
-          setBalance(data.balance);
-        } else {
-            setBalance(0);
         }
+
+        // Process Plan & Renewal Date
+        if (profileResult.status === 'fulfilled') {
+            const { data, error } = profileResult.value;
+            if (data && data.plan_id) {
+                const pid = data.plan_id.toUpperCase();
+                setPlanId(pid);
+                // Simulate Renewal Date for Paid Plans (Starter, Pro, Agency)
+                if (pid !== 'FREE') {
+                    setRenewalDate('15/07/2025');
+                } else {
+                    setRenewalDate(null);
+                }
+            } else {
+                setPlanId('FREE');
+                setRenewalDate(null);
+            }
+        }
+
       } catch (err: any) {
-        console.error("Error fetching credits (catch):", err.message || JSON.stringify(err));
+        console.error("Error fetching billing data:", err.message || JSON.stringify(err));
         setBalance(0);
       } finally {
         setLoading(false);
       }
     }
-    fetchCredits();
+    fetchData();
   }, [user]);
 
   const handlePortalRedirect = (e: React.MouseEvent) => {
@@ -54,6 +89,10 @@ export default function BillingPage() {
   if (loading) {
      return <div className="p-10 flex justify-center"><Spinner className="h-6 w-6 text-primary"/></div>;
   }
+
+  // Helper formatting
+  const isPaidPlan = planId !== 'FREE';
+  const planDisplayName = planId === 'FREE' ? 'Plano Gratuito' : `Plano ${planId.charAt(0).toUpperCase() + planId.slice(1).toLowerCase()}`;
 
   return (
     <div className="space-y-6">
@@ -72,16 +111,29 @@ export default function BillingPage() {
                 <div className="space-y-1">
                     <p className="text-sm font-medium text-slate-400">Plano Atual</p>
                     <div className="flex items-center gap-2">
-                        <h3 className="text-xl font-bold text-white">Conta Gratuita</h3>
-                        <Badge variant="outline" className="border-primary/50 text-primary bg-primary/10">Ativo</Badge>
+                        <h3 className="text-xl font-bold text-white">{planDisplayName}</h3>
+                        <Badge variant="outline" className={isPaidPlan ? "border-primary/50 text-primary bg-primary/10" : "border-slate-500/50 text-slate-400 bg-slate-500/10"}>
+                            {isPaidPlan ? 'Ativo' : 'Básico'}
+                        </Badge>
                     </div>
                 </div>
                 <div className="h-10 w-10 rounded-full bg-white/5 flex items-center justify-center">
                     <CreditCard className="h-5 w-5 text-slate-300" />
                 </div>
             </div>
-            <div className="flex items-center gap-2 text-sm text-slate-400">
-                <span>Renova em:</span> <span className="text-white">N/A (Pré-pago)</span>
+            
+            <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm text-slate-300">
+                    <div className={`h-2 w-2 rounded-full ${isPaidPlan ? 'bg-green-500' : 'bg-slate-500'}`}></div>
+                    {isPaidPlan ? `Status: ${planDisplayName} Pré-pago Ativo` : 'Status: Plano Gratuito'}
+                </div>
+                
+                {isPaidPlan && renewalDate && (
+                    <div className="flex items-center gap-2 text-sm text-slate-400 ml-4">
+                        <Calendar className="h-3 w-3" />
+                        Próxima Renovação: <span className="text-white font-medium">{renewalDate}</span>
+                    </div>
+                )}
             </div>
           </div>
 
@@ -96,7 +148,10 @@ export default function BillingPage() {
                 <span className="text-sm text-slate-500">tokens</span>
              </div>
              <div className="w-full bg-white/5 h-2 rounded-full mt-4 overflow-hidden">
-                <div className="bg-primary h-full rounded-full w-full opacity-50"></div>
+                <div 
+                    className={isPaidPlan ? "bg-primary h-full rounded-full opacity-80" : "bg-slate-600 h-full rounded-full opacity-50"} 
+                    style={{ width: isPaidPlan ? '100%' : '10%' }}
+                ></div>
              </div>
           </div>
 
@@ -109,11 +164,13 @@ export default function BillingPage() {
 
         </CardContent>
         <CardFooter className="flex flex-col sm:flex-row gap-4 border-t border-white/5 pt-6">
-            <Link to="/pricing" className="w-full sm:w-auto">
-                <Button className="w-full bg-primary hover:bg-primary-dark font-semibold">
-                    Gerenciar Assinatura
-                </Button>
-            </Link>
+            <Button 
+                onClick={() => navigate('/plans')}
+                className="w-full sm:w-auto bg-primary hover:bg-primary-dark font-semibold"
+            >
+                Gerenciar Planos e Comprar Créditos
+            </Button>
+            
              <a href="#" onClick={handlePortalRedirect} className="w-full sm:w-auto">
                 <Button variant="outline" className="w-full border-white/10 text-slate-300 hover:text-white hover:bg-white/5">
                     Histórico de Faturas <ExternalLink className="ml-2 h-4 w-4" />

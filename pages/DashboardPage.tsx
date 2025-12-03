@@ -1,9 +1,10 @@
+
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '../components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { useAuth } from '../components/providers/AuthProvider';
-import { PlusCircle, History, Zap, ArrowRight, Image as ImageIcon, Sparkles } from 'lucide-react';
+import { PlusCircle, History, Zap, ArrowRight, Image as ImageIcon, Sparkles, WifiOff } from 'lucide-react';
 import { supabase } from '../lib/supabase/client';
 
 export default function DashboardPage() {
@@ -14,82 +15,100 @@ export default function DashboardPage() {
   const [recentGenerations, setRecentGenerations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [topModel, setTopModel] = useState<string>("Nenhum");
+  const [networkError, setNetworkError] = useState(false);
 
   useEffect(() => {
-    async function fetchDashboardData() {
-      if (!user) return;
+    // Strict guard: only run if we have a valid user ID
+    if (!user?.id) return;
 
+    async function fetchDashboardData() {
       try {
         setLoading(true);
+        setNetworkError(false);
 
-        // 1. Fetch Credits (uses profile_id)
-        const { data: creditData, error: creditError } = await supabase
-          .from('user_credits')
-          .select('balance')
-          .eq('profile_id', user.id) // Changed from user_id to profile_id
-          .single();
+        // Define independent promises for concurrent execution
+        
+        // 1. Fetch Credits
+        const creditsPromise = supabase
+            .from('user_credits')
+            .select('balance')
+            .eq('profile_id', user!.id) 
+            .single();
 
-        if (creditError && creditError.code !== 'PGRST116') { 
-             console.warn("Credit fetch notice:", JSON.stringify(creditError));
+        // 2. Fetch Generation Count (Heavy query)
+        const countPromise = supabase
+            .from('generations')
+            .select('*', { count: 'exact', head: true })
+            .eq('profile_id', user!.id);
+
+        // 3. Fetch Recent Generations
+        const recentPromise = supabase
+            .from('generations')
+            .select('*')
+            .eq('profile_id', user!.id)
+            .order('created_at', { ascending: false })
+            .limit(4);
+
+        // Execute all promises in parallel using allSettled to prevent one failure from blocking others
+        const [creditsResult, countResult, recentResult] = await Promise.allSettled([
+            creditsPromise,
+            countPromise,
+            recentPromise
+        ]);
+
+        // --- Process Credits ---
+        if (creditsResult.status === 'fulfilled') {
+            const { data, error } = creditsResult.value;
+            if (error && error.code !== 'PGRST116') {
+                 if (error.message?.includes("Failed to fetch")) setNetworkError(true);
+                 else console.warn("Credits error:", error.message);
+            }
+            setBalance(data?.balance || 0);
         }
-        
-        setBalance(creditData?.balance || 0);
 
-        // 2. Fetch Generation Count (uses profile_id)
-        const { count, error: countError } = await supabase
-          .from('generations')
-          .select('*', { count: 'exact', head: true })
-          .eq('profile_id', user.id);
-        
-        if (countError) {
-             if (countError.code === '42P01') {
-                 console.warn("Table 'generations' not found. Please run the SQL setup script.");
-             } else {
-                 console.warn("Count fetch warning:", JSON.stringify(countError));
-             }
+        // --- Process Count ---
+        if (countResult.status === 'fulfilled') {
+            const { count, error } = countResult.value;
+            if (error) {
+                if (error.code !== '57014') console.warn("Count error:", error.message); // Ignore timeout warnings
+                setGenCount(0);
+            } else {
+                setGenCount(count || 0);
+            }
         }
-        
-        setGenCount(count || 0);
 
-        // 3. Fetch Recent Generations (uses profile_id)
-        const { data: recentData, error } = await supabase
-          .from('generations')
-          .select('*')
-          .eq('profile_id', user.id)
-          .order('created_at', { ascending: false })
-          .limit(4);
-
-        if (error) {
-           const errMsg = error.message || JSON.stringify(error);
-           if (error.code !== '42P01') { 
-               console.error("Error fetching generations:", errMsg);
-           }
-           setRecentGenerations([]); 
-        } else if (recentData && recentData.length > 0) {
-            setRecentGenerations(recentData);
-
-            const models = recentData.map((g: any) => g.model_id);
-            const modelCounts = models.reduce((acc: any, model: string) => {
-                acc[model] = (acc[model] || 0) + 1;
-                return acc;
-            }, {});
-            const mostUsed = Object.keys(modelCounts).reduce((a, b) => modelCounts[a] > modelCounts[b] ? a : b);
-            setTopModel(mostUsed.toUpperCase());
-        } else {
-            setRecentGenerations([]);
-            setTopModel("Nenhum");
+        // --- Process Recent & Top Model ---
+        if (recentResult.status === 'fulfilled') {
+            const { data, error } = recentResult.value;
+            if (error) {
+                if (error.message?.includes("Failed to fetch")) setNetworkError(true);
+                else console.warn("Recent fetch error:", error.message);
+                setRecentGenerations([]);
+            } else if (data && data.length > 0) {
+                setRecentGenerations(data);
+                // Local stats calc
+                const models = data.map((g: any) => g.model_id || 'Unknown');
+                const modelCounts = models.reduce((acc: any, model: string) => {
+                    acc[model] = (acc[model] || 0) + 1;
+                    return acc;
+                }, {});
+                const mostUsed = Object.keys(modelCounts).reduce((a, b) => modelCounts[a] > modelCounts[b] ? a : b);
+                setTopModel(mostUsed.toUpperCase());
+            } else {
+                setRecentGenerations([]);
+                setTopModel("Nenhum");
+            }
         }
 
       } catch (error: any) {
-        console.error("Error loading dashboard data:", error.message || error);
-        setRecentGenerations([]); 
+        console.error("Dashboard critical error:", error);
       } finally {
         setLoading(false);
       }
     }
 
     fetchDashboardData();
-  }, [user]);
+  }, [user?.id]); // Only re-run if user ID changes
 
   return (
     <div className="min-h-screen bg-background text-slate-50 font-sans">
@@ -107,6 +126,17 @@ export default function DashboardPage() {
             </Button>
           </Link>
         </div>
+
+        {/* Network Error Alert */}
+        {networkError && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-400 p-4 rounded-lg mb-6 flex items-center gap-3">
+                <WifiOff className="h-5 w-5" />
+                <div>
+                    <p className="font-bold">Você está offline ou a conexão falhou.</p>
+                    <p className="text-xs opacity-80">Verifique sua internet. Os dados podem estar desatualizados.</p>
+                </div>
+            </div>
+        )}
 
         {/* Stats Grid */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
