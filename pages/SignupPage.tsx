@@ -46,7 +46,13 @@ export default function SignupPage() {
       }
 
     } catch (err: any) {
-      setError(err.message || 'Ocorreu um erro ao criar a conta.');
+      let msg = err.message || 'Ocorreu um erro ao criar a conta.';
+      
+      if (msg.includes('User already registered')) {
+        msg = 'Este e-mail já está cadastrado. Por favor, faça o login.';
+      }
+      
+      setError(msg);
     } finally {
       setLoading(false);
     }

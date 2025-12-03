@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase/client';
@@ -6,7 +7,7 @@ import { Card, CardContent, CardFooter } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { Spinner } from '../components/ui/Spinner';
-import { Download, Trash2, RefreshCw, MoreVertical, Calendar, Zap, AlertCircle, Search } from 'lucide-react';
+import { Download, Trash2, RefreshCw, MoreVertical, Calendar, Zap, AlertCircle, Search, WifiOff } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/Alert';
 
 interface Generation {
@@ -51,6 +52,9 @@ export default function HistoryPage() {
 
       if (error) {
         const errorMsg = error.message || JSON.stringify(error);
+        if (errorMsg.includes("Failed to fetch")) {
+            throw new Error("Network Error");
+        }
         if (error.code !== '42P01') { 
              console.error('Supabase fetch failed:', errorMsg);
         }
@@ -60,7 +64,12 @@ export default function HistoryPage() {
 
       setGenerations(data && data.length > 0 ? data : []);
     } catch (err: any) {
-      console.error('Error fetching history:', err.message || err);
+      if (err.message === "Network Error" || err.message.includes("Failed to fetch")) {
+          setError("Erro de conexão. Verifique sua internet.");
+      } else {
+          console.error('Error fetching history:', err.message || err);
+          setError("Não foi possível carregar o histórico.");
+      }
       setGenerations([]);
     } finally {
       setLoading(false);
@@ -119,8 +128,8 @@ export default function HistoryPage() {
         </div>
 
         {error && (
-          <Alert variant="destructive" className="mb-6">
-            <AlertCircle className="h-4 w-4" />
+          <Alert variant="destructive" className="mb-6 bg-red-500/10 border-red-500/30">
+            {error.includes("conexão") ? <WifiOff className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
             <AlertTitle>Erro</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
           </Alert>
@@ -197,7 +206,7 @@ export default function HistoryPage() {
                 <CardContent className="p-4">
                   <div className="flex justify-between items-start mb-2">
                     <Badge variant="outline" className="text-[10px] border-primary/20 bg-primary/5 text-primary">
-                      {gen.model_id}
+                      {gen.model_id || gen.model_used || "Unknown"}
                     </Badge>
                     <span className="text-[10px] text-slate-500 flex items-center gap-1">
                       <Calendar className="h-3 w-3" />

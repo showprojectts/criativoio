@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Button } from '../components/ui/Button';
 import { Label } from '../components/ui/Label';
@@ -10,7 +11,6 @@ import {
   Image as ImageIcon, 
   Wand2, 
   Sparkles, 
-  Zap, 
   AlertCircle, 
   Download, 
   Loader2, 
@@ -21,7 +21,8 @@ import {
   Rocket,
   RefreshCw,
   Video,
-  FileCode
+  FileCode,
+  Zap
 } from 'lucide-react';
 import { supabase } from '../lib/supabase/client';
 import { useAuth } from '../components/providers/AuthProvider';
@@ -32,6 +33,13 @@ import { GoogleGenAI } from "@google/genai";
 type PlanType = 'FREE' | 'BASIC' | 'PRO' | 'AGENCY';
 type GenMode = 'nano' | 'banana' | 'flow';
 type MediaType = 'image' | 'video';
+
+// 1. Mapa de Custos (Regra de Negócio)
+const COST_MAP: Record<GenMode, number> = {
+  nano: 1,
+  banana: 3,
+  flow: 5
+};
 
 export default function CreatePage() {
   const { user } = useAuth();
@@ -58,7 +66,7 @@ export default function CreatePage() {
   const [error, setError] = useState<string | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
 
-  // 1. Busca Inicial de Créditos + Listener Realtime
+  // Busca Inicial de Créditos + Listener Realtime
   useEffect(() => {
     if (!user?.id) return;
 
@@ -118,7 +126,7 @@ export default function CreatePage() {
   // Preenchimento via Histórico (Re-gerar)
   useEffect(() => {
     if (location.state && (location.state as any).prompt) {
-      setTheme((location.state as any).prompt); // Simplificação: joga tudo no tema
+      setTheme((location.state as any).prompt);
     }
   }, [location]);
 
@@ -134,11 +142,9 @@ export default function CreatePage() {
   const constructFinalPrompt = () => {
     const parts = [];
     
-    // Modificadores baseados no modo
     if (mode === 'nano') parts.push("simple, minimal details, fast render");
     if (mode === 'flow') parts.push("high quality, 4k, extremely detailed, masterpiece");
 
-    // Inputs do usuário
     if (theme) parts.push(`Subject: ${theme}`);
     if (style) parts.push(`Art Style: ${style}`);
     if (colors) parts.push(`Color Palette: ${colors}`);
@@ -147,15 +153,18 @@ export default function CreatePage() {
     return parts.join(', ');
   };
 
-  // Helper para obter API Key seguramente
   const getApiKey = () => {
-    if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
-      return process.env.API_KEY;
-    }
-    return '';
+    // API KEY CONSTANT - As requested
+    const staticKey = "AIzaSyC3jfqJZSO5iUoGLV_xuOq1xnHi6Ia9vII"; 
+    
+    try {
+      if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+        return process.env.API_KEY;
+      }
+    } catch (e) {}
+    return staticKey;
   };
 
-  // Função para Sugestão de Prompt via Gemini
   const handleSuggestPrompt = async () => {
     if (!theme) {
       setError("Preencha o 'Tema Principal' para receber uma sugestão.");
@@ -166,17 +175,15 @@ export default function CreatePage() {
 
     try {
       const apiKey = getApiKey();
-      if (!apiKey) throw new Error("API Key não encontrada.");
-
       const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.5-flash-preview-09-2025',
         contents: `Atue como um diretor de arte criativo.
         Eu tenho este tema inicial: "${theme}".
         Estenda este tema transformando-o em uma descrição visual rica, hiper-detalhada,
         adicionando elementos de iluminação, textura e composição.
         Mantenha a resposta concisa (máximo 3 frases).
-        Responda em Inglês para melhor compatibilidade com geradores de imagem.`
+        Responda em Inglês.`
       });
 
       const suggestion = response.text;
@@ -191,56 +198,21 @@ export default function CreatePage() {
     }
   };
 
-  // Função para deduzir crédito via RPC após sucesso
-  const deductCredit = async () => {
-    if (!user?.id) return;
-    try {
-      // CORREÇÃO CRÍTICA: Chamada RPC com objeto JSON
-      const { error } = await supabase.rpc('deduct_credit', {
-        user_id_input: user.id 
-      });
-
-      if (error) {
-        console.error("Erro ao deduzir crédito (RPC):", JSON.stringify(error));
-        // Opcional: Definir mensagem de erro na UI se a dedução falhar, 
-        // embora a imagem já tenha sido gerada neste ponto.
-        if (error.code === 'PGRST202') {
-             console.warn("A função RPC 'deduct_credit' não foi encontrada. Verifique se o script SQL foi executado.");
-        }
-      }
-    } catch (err) {
-      console.error("Falha na transação de crédito:", err);
-    }
-  };
-
-  const saveToHistory = async (finalPrompt: string, imageUrl: string) => {
-    if (!user?.id) return;
-    try {
-       await supabase.from('generations').insert({
-        profile_id: user.id,
-        prompt: finalPrompt,
-        model_id: mode === 'nano' ? 'gemini-flash' : 'imagen-4',
-        credits_cost: 1,
-        result_url: imageUrl, 
-        status: 'completed'
-      });
-    } catch (err) {
-      console.error("Error saving history:", err);
-    }
-  };
-
-  // Função Principal de Geração
+  // Função Principal de Geração (Fluxo Estrito: IA -> Histórico -> Dedução -> Exibição)
   const handleGenerate = async () => {
+    if (!user?.id) return;
+    
     setError(null);
-    setResultUrl(null);
+    setResultUrl(null); // Limpa imagem anterior e bloqueia download
+    
+    const currentCost = COST_MAP[mode];
 
-    // Validações
     if (!theme.trim()) {
       setError("O campo 'Tema Principal' é obrigatório.");
       return;
     }
-    if (balance <= 0) {
-      setError("Créditos esgotados. Por favor, faça um upgrade.");
+    if (balance < currentCost) {
+      setError(`Saldo insuficiente. Esta geração custa ${currentCost} créditos.`);
       return;
     }
     if (isModeLocked(mode)) {
@@ -251,68 +223,115 @@ export default function CreatePage() {
     setIsGenerating(true);
 
     try {
+      // ---------------------------------------------------------
+      // 1. CHAMAR API DE IA (GERAÇÃO)
+      // ---------------------------------------------------------
       const apiKey = getApiKey();
-      if (!apiKey) throw new Error("Chave de API não configurada no ambiente.");
-
       const finalPrompt = constructFinalPrompt();
       const ai = new GoogleGenAI({ apiKey });
       
-      let imageUrl = null;
+      let tempImageUrl = null;
+      let realModelName = 'gemini-2.5-flash-image';
 
       if (mode === 'nano') {
-        // Modo Rápido (Gemini 2.5 Flash Image)
+        realModelName = 'gemini-2.5-flash-image';
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image',
+            model: realModelName,
             contents: { parts: [{ text: finalPrompt }] },
         });
 
-        // Extrair imagem do response
         if (response.candidates?.[0]?.content?.parts) {
             for (const part of response.candidates[0].content.parts) {
                 if (part.inlineData) {
-                    imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                    tempImageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
                     break;
                 }
             }
         }
       } else {
-        // Modo Alta Qualidade (Imagen 4.0)
-        // Disponível para Banana e Flow modes
-        const response = await ai.models.generateImages({
-            model: 'imagen-4.0-generate-001',
-            prompt: finalPrompt,
-            config: {
-                numberOfImages: 1,
-                aspectRatio: '1:1',
-                outputMimeType: 'image/jpeg'
-            },
+        // Fallback/Placeholder for other models for now using Gemini
+        realModelName = 'gemini-2.5-flash-image';
+        const response = await ai.models.generateContent({
+            model: realModelName,
+            contents: { parts: [{ text: finalPrompt }] },
         });
-
-        const b64Data = response.generatedImages?.[0]?.image?.imageBytes;
-        if (b64Data) {
-            imageUrl = `data:image/jpeg;base64,${b64Data}`;
+         if (response.candidates?.[0]?.content?.parts) {
+            for (const part of response.candidates[0].content.parts) {
+                if (part.inlineData) {
+                    tempImageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                    break;
+                }
+            }
         }
       }
       
-      if (!imageUrl) {
+      if (!tempImageUrl) {
         throw new Error("A IA não retornou uma imagem válida. Tente ajustar o prompt.");
       }
 
-      setResultUrl(imageUrl);
+      // ---------------------------------------------------------
+      // 2. SALVAR NO HISTÓRICO (INSERT ATÔMICO - GATEKEEPER)
+      // CRÍTICO: Se falhar, paramos TUDO. Nenhuma dedução, nenhuma imagem.
+      // ---------------------------------------------------------
+      const { error: insertError } = await supabase.from('generations').insert({
+        profile_id: user.id,   
+        prompt: finalPrompt,
+        model_id: realModelName, // Nome real do modelo ou o modo (ex: mode)
+        credits_cost: currentCost,
+        result_url: tempImageUrl,
+        status: 'completed',
+        type: 'image' // Obrigatório: 'image'
+      });
 
-      // Sucesso na API -> Deduzir Crédito -> Salvar Histórico
-      await deductCredit();
-      await saveToHistory(finalPrompt, imageUrl);
+      if (insertError) {
+         console.error("Erro crítico ao salvar histórico:", JSON.stringify(insertError));
+         
+         // Tratamento de erros de Schema
+         if (insertError.code === '22P02') {
+             throw new Error(`Erro de Banco de Dados: Valor inválido para coluna Enum (${insertError.message}).`);
+         }
+         if (insertError.code === '23502') {
+             throw new Error("Erro de Banco de Dados: Campo obrigatório faltando.");
+         }
+         
+         // Interrompe o fluxo.
+         throw new Error("Falha ao registrar a geração. A operação foi cancelada e nada foi cobrado.");
+      }
+
+      // ---------------------------------------------------------
+      // 3. DEDUZIR CRÉDITOS (UPDATE DIRETO)
+      // Só executa se o INSERT acima passou sem erro
+      // ---------------------------------------------------------
+      const newBalance = Math.max(0, balance - currentCost);
+      const { error: updateError } = await supabase
+          .from('user_credits')
+          .update({ balance: newBalance })
+          .eq('profile_id', user.id);
+
+      if (updateError) {
+          console.warn("Aviso: Crédito não descontado devido a erro de rede, mas histórico foi salvo.", updateError);
+          // Não paramos aqui, pois a imagem já foi gerada e registrada.
+      } else {
+          setBalance(newBalance);
+          window.dispatchEvent(new Event('profile_updated'));
+      }
+
+      // ---------------------------------------------------------
+      // 4. SUCESSO FINAL -> LIBERAR IMAGEM NA UI
+      // ---------------------------------------------------------
+      setResultUrl(tempImageUrl);
 
     } catch (err: any) {
-      console.error(err);
-      setError(err.message || "Ocorreu um erro ao gerar a imagem. Tente novamente.");
+      console.error("Erro no fluxo de geração:", err);
+      setError(err.message || "Ocorreu um erro ao processar sua solicitação.");
+      setResultUrl(null); // Garante que a imagem fica oculta em caso de erro
     } finally {
       setIsGenerating(false);
     }
   };
 
-  const canGenerate = theme.trim().length > 0 && balance > 0 && !isGenerating && !loadingUser;
+  const currentCost = COST_MAP[mode];
+  const canGenerate = theme.trim().length > 0 && balance >= currentCost && !isGenerating && !loadingUser;
 
   return (
     <div className="h-full bg-background text-slate-50 font-sans p-4 lg:p-6 overflow-hidden flex flex-col">
@@ -335,7 +354,7 @@ export default function CreatePage() {
 
         <div className="flex flex-col lg:grid lg:grid-cols-2 gap-6 h-full overflow-hidden">
           
-          {/* COLUNA ESQUERDA: Configurações (Scrollable) */}
+          {/* COLUNA ESQUERDA: Configurações */}
           <div className="flex flex-col gap-6 overflow-y-auto pr-2 pb-20 lg:pb-0 h-full">
             
             {/* Seletor de Modo */}
@@ -369,6 +388,7 @@ export default function CreatePage() {
                           <h3 className="text-sm font-bold text-white capitalize flex items-center gap-2">
                             {m} {locked && <Badge variant="destructive" className="h-4 text-[9px] px-1"><Lock className="h-2 w-2 mr-1" /> Upgrade</Badge>}
                           </h3>
+                          <p className="text-[10px] text-slate-400">Custo: {COST_MAP[m]} Créditos</p>
                         </div>
                       </div>
                     </div>
@@ -431,7 +451,7 @@ export default function CreatePage() {
                </div>
             </section>
 
-            {/* Prompt Display & AI Suggester */}
+            {/* Prompt Display */}
             <section className="bg-black/30 p-3 rounded-lg border border-white/5 space-y-3">
               <Label className="text-[10px] text-slate-500 flex items-center gap-1 uppercase tracking-wider">
                  <FileCode className="h-3 w-3" /> Prompt Final Gerado
@@ -474,7 +494,7 @@ export default function CreatePage() {
                 disabled={!canGenerate}
                 className={cn(
                   "w-full h-14 text-base font-bold shadow-lg transition-all",
-                  (balance <= 0)
+                  (balance < currentCost)
                     ? "bg-slate-700 text-slate-400 cursor-not-allowed"
                     : "bg-primary hover:bg-primary-dark shadow-primary/20"
                 )}
@@ -483,22 +503,21 @@ export default function CreatePage() {
                   <>
                     <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Gerando...
                   </>
-                ) : balance <= 0 ? (
-                   "Créditos Esgotados (Upgrade)"
+                ) : balance < currentCost ? (
+                   "Créditos Insuficientes"
                 ) : (
                   <>
                     <Wand2 className="mr-2 h-5 w-5" /> 
-                    Gerar Criativo <Badge variant="secondary" className="ml-2 bg-black/20 text-white border-0 text-[10px]">-1 Crédito</Badge>
+                    Gerar (-{currentCost} {currentCost > 1 ? 'Créditos' : 'Crédito'})
                   </>
                 )}
               </Button>
             </div>
           </div>
 
-          {/* COLUNA DIREITA: Preview (8 cols) */}
+          {/* COLUNA DIREITA: Preview */}
           <div className="flex flex-col h-full gap-4 overflow-hidden">
             
-            {/* Seletor de Abas (Image vs Video) */}
             <div className="flex bg-surface/50 p-1 rounded-lg border border-white/5 w-fit shrink-0">
               <button
                 onClick={() => setGenerationType('image')}
@@ -524,10 +543,8 @@ export default function CreatePage() {
               </button>
             </div>
 
-            {/* Visualizador Principal */}
             <div className="flex-1 rounded-xl border border-white/10 bg-surface/30 relative overflow-hidden flex items-center justify-center p-4 shadow-inner bg-black/40 min-h-[400px]">
                
-               {/* Background Pattern */}
                <div className="absolute inset-0 opacity-10 pointer-events-none" 
                     style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, white 1px, transparent 0)', backgroundSize: '32px 32px' }}>
                </div>
@@ -546,14 +563,13 @@ export default function CreatePage() {
                  <>
                    {resultUrl ? (
                      <div className="relative w-full h-full flex flex-col items-center justify-center animate-in fade-in zoom-in duration-500">
-                        {/* Imagem Contida */}
                         <img 
                           src={resultUrl} 
                           alt="Resultado Gerado" 
+                          onContextMenu={(e) => e.preventDefault()}
                           className="w-full h-full object-contain rounded-lg shadow-2xl border border-white/10"
                           style={{ aspectRatio: '1/1' }}
                         />
-                        {/* Botões Flutuantes */}
                         <div className="absolute bottom-4 flex gap-3 bg-black/60 p-2 rounded-lg backdrop-blur-md border border-white/10">
                            <a href={resultUrl} download="criativo-io-result.jpg">
                              <Button size="sm" className="bg-primary hover:bg-primary-dark h-8 text-xs">

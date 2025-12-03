@@ -12,7 +12,7 @@ import { Spinner } from '../../components/ui/Spinner';
 import { Modal } from '../../components/ui/Modal';
 
 export default function ProfilePage() {
-  const { user, signOut } = useAuth();
+  const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -27,6 +27,9 @@ export default function ProfilePage() {
   // Delete Account State
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Remove Photo Modal State
+  const [isRemovePhotoModalOpen, setIsRemovePhotoModalOpen] = useState(false);
 
   useEffect(() => {
     async function getProfile() {
@@ -43,6 +46,13 @@ export default function ProfilePage() {
           .single();
 
         if (error) {
+          if (error.code === 'PGRST116') { // Result contains 0 rows
+             // Fallback to auth metadata if profile doesn't exist yet
+             setFullName(user.user_metadata?.full_name || '');
+             setEmail(user.email || '');
+             setAvatarUrl(null);
+             return;
+          }
           if (error.code === '42703') { // Column does not exist fallback
              const { data: retryData } = await supabase
               .from('profiles')
@@ -55,7 +65,7 @@ export default function ProfilePage() {
              setAvatarUrl(null);
              return;
           }
-          console.error('Error loading profile:', error);
+          console.error('Error loading profile:', error.message || JSON.stringify(error));
         }
 
         // 2. Set State
@@ -69,7 +79,7 @@ export default function ProfilePage() {
         }
 
       } catch (error: any) {
-        console.error('Error loading user data:', error.message || error);
+        console.error('Error loading user data:', error.message || JSON.stringify(error));
         if (error.code === '42P01') {
             setMessage({ type: 'error', text: 'Tabela "profiles" não encontrada. Verifique o banco de dados.' });
         }
@@ -83,7 +93,6 @@ export default function ProfilePage() {
 
   // Helper to trigger sidebar update
   const triggerGlobalUpdate = () => {
-    // This event acts like router.refresh() for our Sidebar component
     window.dispatchEvent(new Event('profile_updated'));
   };
 
@@ -95,13 +104,10 @@ export default function ProfilePage() {
     setMessage(null);
 
     try {
-      const updates = {
-        full_name: fullName,
-      };
-
+      // Using update instead of upsert to avoid RLS insert issues if row exists
       const { error } = await supabase
         .from('profiles')
-        .update(updates)
+        .update({ full_name: fullName })
         .eq('id', user.id);
 
       if (error) throw error;
@@ -135,31 +141,31 @@ export default function ProfilePage() {
       setMessage(null);
       const file = event.target.files[0];
       const fileExt = file.name.split('.').pop();
-      
-      // Use a consistent path structure but append query param later to bust cache
+      // Use standard filename to prevent buildup
       const filePath = `${user.id}/avatar.${fileExt}`;
 
-      // 1. Upload to 'avatares' bucket (Upsert true to overwrite)
+      const bucketName = 'avatares';
+
+      // 1. Upload to bucket
       const { error: uploadError } = await supabase.storage
-        .from('avatares') 
+        .from(bucketName) 
         .upload(filePath, file, { upsert: true });
 
       if (uploadError) {
           if (uploadError.message.includes("Bucket not found")) {
-              throw new Error("Bucket 'avatares' não existe.");
+              throw new Error(`Bucket '${bucketName}' não existe.`);
           }
           throw uploadError;
       }
 
-      // 2. Get Public URL
+      // 2. Get Public URL with timestamp for cache busting
       const { data: { publicUrl } } = supabase.storage
-        .from('avatares')
+        .from(bucketName)
         .getPublicUrl(filePath);
 
-      // 3. Cache Busting: Add timestamp to force browser to reload image
       const urlWithTimestamp = `${publicUrl}?t=${new Date().getTime()}`;
 
-      // 4. Update Profile in DB with the Timestamped URL
+      // 3. Update Profile
       const { error: updateError } = await supabase
         .from('profiles')
         .update({ avatar_url: urlWithTimestamp })
@@ -167,7 +173,7 @@ export default function ProfilePage() {
         
       if (updateError) throw updateError;
       
-      // 5. Update Local & Global State
+      // 4. Update State
       setAvatarUrl(urlWithTimestamp);
       triggerGlobalUpdate(); 
       setMessage({ type: 'success', text: 'Foto de perfil atualizada!' });
@@ -181,19 +187,19 @@ export default function ProfilePage() {
     }
   };
 
+  // --- LOGICA DE REMOÇÃO DE FOTO ---
   const handleRemoveAvatar = async () => {
-    if (!user || !avatarUrl) return;
+    if (!user) return;
     
-    if (!window.confirm("Tem certeza que deseja remover sua foto de perfil?")) return;
-
     setUploading(true);
     setMessage(null);
-
-    // Keep reference for cleanup
-    const urlToDelete = avatarUrl;
+    setIsRemovePhotoModalOpen(false); // Fecha o modal
 
     try {
-        // 1. DATABASE UPDATE (First priority for persistence)
+        const bucketName = 'avatares';
+
+        // 1. LIMPEZA DO BANCO DE DADOS (Prioridade Máxima)
+        // Fazemos isso primeiro para garantir que a UI atualize mesmo se o Storage falhar
         const { error: dbError } = await supabase
             .from('profiles')
             .update({ avatar_url: null })
@@ -201,42 +207,50 @@ export default function ProfilePage() {
 
         if (dbError) throw dbError;
 
-        // 2. STATE UPDATE (Immediate Feedback)
+        // Atualiza UI Imediatamente
         setAvatarUrl(null);
         triggerGlobalUpdate();
-        
-        // 3. STORAGE CLEANUP (Best effort)
-        try {
-            const bucketName = 'avatares';
-            // Extract the path from the URL (ignoring query params)
-            // URL format: .../avatares/USER_ID/FILE.ext?t=...
-            const cleanUrl = urlToDelete.split('?')[0]; 
-            const urlParts = cleanUrl.split(`/${bucketName}/`);
-            
-            if (urlParts.length > 1) {
-                const relativePath = decodeURIComponent(urlParts[1]);
-                const { error: removeError } = await supabase.storage
-                    .from(bucketName)
-                    .remove([relativePath]);
-                
-                if (removeError) console.warn("Storage remove warning:", removeError);
-            }
-        } catch (storageErr) {
-            console.warn("Error parsing URL for deletion:", storageErr);
-        }
-
         setMessage({ type: 'success', text: 'Foto removida com sucesso.' });
 
+        // 2. REMOÇÃO DO ARQUIVO (Best Effort)
+        if (avatarUrl) {
+            let filePath = '';
+            try {
+                // Tenta extrair o caminho relativo da URL
+                // Ex: .../storage/v1/object/public/avatares/USER_ID/avatar.png
+                if (avatarUrl.includes(bucketName)) {
+                     const parts = avatarUrl.split(`/${bucketName}/`);
+                     if (parts[1]) {
+                         filePath = parts[1].split('?')[0]; // Remove query params
+                     }
+                }
+            } catch (e) {
+                console.warn("Erro ao parsear URL do avatar:", e);
+            }
+
+            if (filePath) {
+                const { error: removeError } = await supabase.storage
+                    .from(bucketName)
+                    .remove([filePath]);
+                
+                if (removeError) {
+                    console.error("Erro ao deletar arquivo do storage:", removeError);
+                    // Não lançamos throw aqui para não reverter o sucesso visual
+                }
+            }
+        }
+
     } catch (error: any) {
-        console.error("Error removing avatar:", error);
+        console.error("Erro crítico ao remover avatar:", error);
         setMessage({ type: 'error', text: error.message || 'Erro ao remover foto.' });
-        // Revert local state if DB failed
-        setAvatarUrl(urlToDelete);
+        // Em caso de erro no DB, tentamos recuperar o estado (opcional, mas seguro)
+        // getProfile(); 
     } finally {
         setUploading(false);
     }
   };
 
+  // --- LOGICA DE EXCLUSÃO DE CONTA (RPC) ---
   const handleConfirmDelete = async () => {
       if (!user) return;
       
@@ -244,57 +258,51 @@ export default function ProfilePage() {
       setMessage(null);
 
       try {
-          // 1. Client-side Avatar Cleanup
-          if (avatarUrl) {
-              try {
-                  const bucketName = 'avatares';
-                  const cleanUrl = avatarUrl.split('?')[0];
-                  const urlParts = cleanUrl.split(`/${bucketName}/`);
-                  if (urlParts.length > 1) {
-                      await supabase.storage.from(bucketName).remove([decodeURIComponent(urlParts[1])]);
-                  }
-              } catch (storageErr) {
-                  console.warn("Avatar cleanup failed, proceeding...", storageErr);
-              }
-          }
+          const userId = user.id;
+          console.log("Iniciando exclusão de conta via RPC para:", userId);
 
-          // 2. Server-side Data & Auth Deletion
-          const { data: { session } } = await supabase.auth.getSession();
-          const token = session?.access_token;
+          // 1. Limpar Dados Dependentes (Opcional, mas seguro se o cascade falhar)
+          await supabase.from('generations').delete().eq('profile_id', userId);
+          await supabase.from('user_credits').delete().eq('profile_id', userId);
+          await supabase.from('profiles').delete().eq('id', userId);
 
-          if (!token) throw new Error("Sessão inválida. Faça login novamente.");
-
+          // 2. Chamar API Serverless para deletar usuário da Auth (Admin Privileges)
+          // Isso é mais seguro que RPC direto em alguns casos onde o user já perdeu permissões de perfil
           const response = await fetch('/api/delete-account', {
-              method: 'DELETE',
-              headers: {
-                  'Authorization': `Bearer ${token}`
-              }
+            method: 'DELETE',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+            }
           });
 
-          if (!response.ok) {
+          // Check if response is actually JSON before parsing (handles HTML errors from Vite/Vercel)
+          const contentType = response.headers.get("content-type");
+          if (contentType && contentType.indexOf("application/json") !== -1) {
               const data = await response.json();
-              throw new Error(data.error || "Falha ao excluir conta.");
+              if (!response.ok) {
+                throw new Error(data.error || "Erro ao excluir conta.");
+              }
+          } else {
+              // If not JSON, it's likely a 500/404 HTML error page
+              if (!response.ok) throw new Error(`Erro na API (${response.statusText})`);
           }
 
-          // 3. Logout
-          await signOut();
-          window.location.href = '/';
-          
       } catch (err: any) {
-          console.error("Error deleting account:", err);
-          setMessage({ 
-              type: 'error', 
-              text: err.message || 'Erro crítico ao excluir conta.' 
-          });
+          console.error("Erro no fluxo de exclusão:", err);
+          // Mesmo com erro, tentamos o logout forçado abaixo
       } finally {
-          setIsDeleting(false);
-          // Don't close modal on error so user sees the message
+          // 3. Logout Forçado e Redirecionamento (Fluxo Final)
+          // Executamos isso independentemente de erros para garantir que a sessão morra
+          try {
+             await supabase.auth.signOut();
+             localStorage.clear(); // Limpeza extra
+             window.location.href = '/'; // Redirect to Home (Landing Page)
+          } catch {
+             // Se falhar o signOut, forçamos o refresh para Home
+             window.location.href = '/';
+          }
       }
-  };
-
-  const handleCloseDeleteModal = () => {
-      setIsDeleteModalOpen(false);
-      setMessage(null);
   };
 
   if (loading) {
@@ -322,10 +330,8 @@ export default function ProfilePage() {
                             src={avatarUrl} 
                             alt="Avatar" 
                             className="h-full w-full object-cover"
-                            // Adding key forces re-render if url changes
-                            key={avatarUrl} 
+                            key={avatarUrl} // Force re-render on URL change
                             onError={(e) => {
-                                // Fallback if image fails to load
                                 e.currentTarget.style.display = 'none';
                             }}
                         />
@@ -371,7 +377,7 @@ export default function ProfilePage() {
                             variant="ghost" 
                             size="sm" 
                             disabled={uploading}
-                            onClick={handleRemoveAvatar}
+                            onClick={() => setIsRemovePhotoModalOpen(true)}
                             className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
                         >
                             <Trash2 className="h-3 w-3 mr-2" />
@@ -450,15 +456,16 @@ export default function ProfilePage() {
         </CardContent>
       </Card>
 
+      {/* Modal: Delete Account Confirmation */}
       <Modal
         isOpen={isDeleteModalOpen}
-        onClose={handleCloseDeleteModal}
+        onClose={() => setIsDeleteModalOpen(false)}
         title="Confirmar Exclusão de Conta"
         description="Esta ação não pode ser desfeita. Isso excluirá permanentemente sua conta, créditos e todos os criativos gerados."
         variant="destructive"
         footer={
           <>
-            <Button variant="ghost" onClick={handleCloseDeleteModal} disabled={isDeleting}>
+            <Button variant="ghost" onClick={() => setIsDeleteModalOpen(false)} disabled={isDeleting}>
               Cancelar
             </Button>
             <Button variant="destructive" onClick={handleConfirmDelete} disabled={isDeleting}>
@@ -479,6 +486,31 @@ export default function ProfilePage() {
                 Atenção: Você perderá acesso imediato e seus dados não poderão ser recuperados.
             </p>
         </div>
+      </Modal>
+
+      {/* Modal: Remove Photo Confirmation */}
+      <Modal
+        isOpen={isRemovePhotoModalOpen}
+        onClose={() => setIsRemovePhotoModalOpen(false)}
+        title="Remover Foto de Perfil"
+        description="Tem certeza que deseja remover sua foto? O avatar padrão será exibido."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setIsRemovePhotoModalOpen(false)} disabled={uploading}>
+              Cancelar
+            </Button>
+            <Button variant="destructive" onClick={handleRemoveAvatar} disabled={uploading}>
+              {uploading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Removendo...
+                  </>
+              ) : (
+                  "Sim, Remover Foto"
+              )}
+            </Button>
+          </>
+        }
+      >
       </Modal>
 
     </div>

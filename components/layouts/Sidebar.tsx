@@ -172,11 +172,11 @@ const Sidebar: React.FC<SidebarProps> = ({ onCollapse }) => {
             active={isActive('/history')} 
           />
           <NavItem 
-            to="/recharge" 
+            to="/plans" 
             icon={Zap} 
-            label="Créditos" 
+            label="Planos" 
             collapsed={collapsed} 
-            active={isActive('/recharge')} 
+            active={isActive('/plans')} 
           />
         </nav>
       </div>
@@ -238,7 +238,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onCollapse }) => {
                  <Settings className="h-4 w-4" /> Configurações
                </Link>
                
-               <Link to="/pricing" className="flex items-center gap-2 w-full p-2 text-sm text-slate-300 hover:text-white hover:bg-white/5 rounded-md">
+               <Link to="/plans" className="flex items-center gap-2 w-full p-2 text-sm text-slate-300 hover:text-white hover:bg-white/5 rounded-md">
                  <CreditCard className="h-4 w-4" /> Assinaturas
                </Link>
                

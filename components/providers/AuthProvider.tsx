@@ -1,3 +1,4 @@
+
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase/client';
 import { Session, User } from '@supabase/supabase-js';
@@ -24,29 +25,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // 1. Check active session on mount
+    let mounted = true;
+
+    // 1. Initial Session Check
     const initSession = async () => {
       try {
         const { data: { session: currentSession } } = await supabase.auth.getSession();
-        setSession(currentSession);
-        setUser(currentSession?.user ?? null);
+        
+        if (mounted) {
+          setSession(currentSession);
+          setUser(currentSession?.user ?? null);
+        }
       } catch (error) {
-        console.error('Error fetching session:', error);
+        console.error('AuthProvider: Error fetching initial session:', error);
       } finally {
-        setLoading(false);
+        if (mounted) {
+          setLoading(false);
+        }
       }
     };
 
     initSession();
 
-    // 2. Listen for auth changes
+    // 2. Real-time Auth Listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession);
-      setUser(newSession?.user ?? null);
-      setLoading(false);
+      if (mounted) {
+        setSession(newSession);
+        setUser(newSession?.user ?? null);
+        setLoading(false); // Ensure loading is false on any auth change
+      }
     });
 
     return () => {
+      mounted = false;
       subscription.unsubscribe();
     };
   }, []);
